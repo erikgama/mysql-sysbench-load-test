@@ -1,0 +1,14 @@
+# Resultados e dados locais de execução
+results/
+*_latencies/
+
+# Credenciais, certificados e configurações locais
+.env
+*.pem
+*.key
+*.crt
+
+# Binários e artefatos locais
+local*/
+__pycache__/
+*.py[cod]
