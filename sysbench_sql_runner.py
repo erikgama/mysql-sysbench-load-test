@@ -108,7 +108,7 @@ def build_lua(statements: list[str], mode: str, latency_directory: Path | None) 
         else "selected_index = query_index\n  query = queries[selected_index]\n  query_index = (query_index % #queries) + 1"
     )
     latency_setup = ""
-    latency_capture = ""
+    execute_query = "con:query(query)"
     latency_finish = ""
     if latency_directory:
         latency_dir = lua_long_string(str(latency_directory))
@@ -139,7 +139,7 @@ local function flush_latencies()
   end
 end
 """
-        latency_capture = """
+        execute_query = """
   local started_us = now_us()
   con:query(query)
   local elapsed_ms = (now_us() - started_us) / 1000
@@ -147,7 +147,6 @@ end
   if #latency_buffer >= 100 then
     flush_latencies()
   end
-  return
 """
         latency_finish = """
   flush_latencies()
@@ -180,8 +179,7 @@ function event()
     end
     return tostring(random_values[name])
   end)
-  {latency_capture}
-  con:query(query)
+  {execute_query}
 end
 """
 
