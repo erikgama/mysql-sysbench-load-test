@@ -4,7 +4,7 @@ Este guia executa as queries do seu arquivo SQL com 100 conexões simultâneas e
 
 ## 1. Preparar uma máquina Linux
 
-Use uma VM Linux com acesso de rede ao banco. Ela precisa de Python 3 e Sysbench 1.0 ou superior.
+Use uma VM Linux com acesso de rede ao banco. Ela precisa de Python 3 e Sysbench 1.0 ou superior com suporte a MySQL.
 
 **Ubuntu/Debian**
 
@@ -24,7 +24,12 @@ Valide:
 ```bash
 python3 --version
 sysbench --version
+sysbench --help | grep -- '--mysql-host'
 ```
+
+O último comando deve mostrar a opção `--mysql-host`.
+
+MySQL Shell e o cliente `mysql` **não são necessários** para rodar o benchmark. Eles são opcionais, caso você queira testar a conectividade ou criar as queries antes da execução.
 
 ## 2. Copiar e adaptar o workload
 
