@@ -31,7 +31,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements-benchmark.txt
 ```
 
-O comando `--help` deve mostrar `--mysql-host`. Use Sysbench 1.0+ com MySQL e LuaJIT. Não precisa de MySQL Shell nem do cliente `mysql`. O PyMySQL é usado apenas na coleta. A execução real já foi validada em macOS; consulte os [testes e limites de compatibilidade](VALIDACAO_BENCHMARK.md) para Linux e versões MySQL.
+O comando `--help` deve mostrar `--mysql-host`. Use Sysbench 1.0+ com MySQL e LuaJIT. Não precisa de MySQL Shell nem do cliente `mysql`. O PyMySQL é usado apenas na coleta. Os testes automatizados passaram em Ubuntu/Python 3.10 e 3.12; a execução conectada ao banco foi validada em macOS. Consulte os [testes e limites de compatibilidade](VALIDACAO_BENCHMARK.md).
 
 Se você já clonou o projeto, entre na pasta, use `git pull --ff-only` e reinstale os requisitos. Preserve suas alterações locais antes de atualizar.
 

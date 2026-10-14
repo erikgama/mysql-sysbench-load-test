@@ -16,7 +16,7 @@
 python3 -m unittest discover -s tests -v
 ```
 
-A CI adicionada executara os testes em Ubuntu/Python 3.10 e 3.12 quando o codigo for publicado. Essa CI ainda nao foi executada no GitHub.
+A [validação no GitHub Actions](https://github.com/erikgama/mysql-sysbench-load-test/actions/runs/38647938321) passou em Ubuntu com Python **3.10 e 3.12**, no commit `eb64c04`: 23 testes em cada versão, incluindo Sysbench real com driver dry-run. Essa CI não conecta a um banco real.
 
 ## Verificacoes reais, somente-leitura
 
@@ -43,6 +43,6 @@ Uma verificacao adicional no RAPID confirmou captura de conexao, duracao monoton
 - Nao houve importacao de CPU/storage da cloud nesta rodada. O suporte CSV foi verificado nos testes automatizados; integracao direta com APIs cloud nao existe nesta versao.
 - A biblioteca cliente dos dois binarios Sysbench locais falhou com TLS solicitado (erro 2026). A validacao funcional usou `--mysql-ssl off` no banco de desenvolvimento, como nos comandos anteriores. A conexao de carga registrou cipher vazio. O padrao do runner continua `on` e a negociacao precisa ser validada no ambiente do cliente.
 - O coletor, o servidor e o gerador possuem escopos diferentes. Contadores globais incluem atividade externa e o proprio monitoramento. Medir o overhead e a resolucao das metricas continua necessario para uma POC de performance.
-- Windows nao foi validado. Linux foi preparado no codigo/CI; a execucao real deste registro foi em macOS. A validacao real foi em 26.7; compatibilidade com MySQL 8.0/8.4 depende das capacidades detectadas e ainda requer rodada real nessas versoes.
+- Windows não foi validado. Os testes automatizados passaram em Linux/Ubuntu; a execução conectada a um banco real deste registro foi em macOS. A validação real foi em 26.7; compatibilidade com MySQL 8.0/8.4 depende das capacidades detectadas e ainda requer rodada real nessas versões.
 
 Os resultados brutos locais ficam em `results/` e sao ignorados pelo Git. Nao ha endpoint, senha nem resultados privados nos exemplos publicos.
