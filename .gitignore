@@ -10,5 +10,12 @@ results/
 
 # Binários e artefatos locais
 local*/
+.venv/
 __pycache__/
 *.py[cod]
+
+# Metadados do Finder e configurações locais do benchmark
+.DS_Store
+environment.local.json
+cases.local.json
+engine_map.local.json

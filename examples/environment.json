@@ -1,0 +1,15 @@
+{
+  "provider": "PREENCHER: AWS ou OCI",
+  "region": "PREENCHER",
+  "shape": "PREENCHER",
+  "cpu_unit_type": "PREENCHER: vCPU ou ECPU",
+  "cpu_units": null,
+  "memory_gib": null,
+  "storage_type": "PREENCHER",
+  "storage_gib": null,
+  "provisioned_iops": null,
+  "provisioned_throughput_mib_s": null,
+  "high_availability": null,
+  "dataset_id": "PREENCHER: mesma copia/posicao de dados nos ambientes",
+  "external_workload": "PREENCHER: houve outras aplicacoes durante o teste?"
+}

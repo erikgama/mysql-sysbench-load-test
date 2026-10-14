@@ -1,13 +1,24 @@
 # MySQL Sysbench Load Test
 
-Kit genérico para executar testes de carga e estresse em MySQL com Sysbench. O runner lê queries de um arquivo SQL, executa com concorrência configurável e grava TPS, erros, reconexões, p50, p95 e p99.
+Kit genérico para executar testes de carga e estresse em MySQL com Python e Sysbench. Escolha o benchmark avançado para diagnóstico detalhado ou o runner simples para uma carga mista de queries.
+
+## Benchmark avançado: queries individuais e diagnóstico
+
+O novo `mysql_benchmark.py` testa cada query/caso separadamente, com quotas por thread, warm-up por estabilidade, coleta SQL antes/durante/depois e relatório HTML independente de internet. Suporta InnoDB, HeatWave forçado, escolha automática e mapa de destino por query. O runner simples abaixo continua disponível.
+
+**Comece pelo [passo a passo do novo script](GUIA_BENCHMARK_AVANCADO.md)**: instalação no Linux, download do projeto, arquivo SQL, execução e leitura do HTML. Não é necessário MySQL Shell nem o cliente `mysql`.
+
+A senha é solicitada de forma oculta. O guia também explica casos fixos, CPU/storage da cloud e comparação de ambientes. Exemplos públicos AirportDB, casos e mapa de motores estão em [`examples/`](examples/). Ajuste-os ao banco do cliente. CPU e outros dados dependem da instrumentação disponível; informações ausentes são identificadas no relatório.
+
+Veja as [evidências e limites da validação](VALIDACAO_BENCHMARK.md). Os testes funcionais não devem ser utilizados como comparação de performance entre clouds.
 
 ## Pré-requisitos
 
 | Item | Obrigatório? | Uso |
 |---|---|---|
-| Python 3 | Sim | Executa o runner `sysbench_sql_runner.py`. |
+| Python 3 | Sim | Coordena a execução; o benchmark avançado exige Python 3.10+. |
 | Sysbench 1.0+ com suporte a MySQL | Sim | Abre as conexões e executa a carga. |
+| PyMySQL | Apenas no avançado e monitor de backup | Coleta informações usando conexões separadas; não substitui o Sysbench na carga. |
 | Acesso de rede, endpoint e usuário MySQL | Sim | Permite chegar ao banco que será testado. |
 | MySQL Shell ou cliente `mysql` | Não | São opcionais para testar conectividade ou montar queries. O benchmark não precisa deles. |
 
@@ -36,11 +47,18 @@ O último comando deve mostrar a opção `--mysql-host`, confirmando que o Sysbe
 
 | Arquivo | Uso |
 |---|---|
-| `sysbench_sql_runner.py` | Runner principal. |
+| `mysql_benchmark.py` | Novo benchmark individual, warm-up, diagnóstico e comparação. |
+| `benchmarkkit/` | Coleta MySQL, execução e geração do relatório HTML. |
+| `requirements-benchmark.txt` | Dependência Python do benchmark avançado. |
+| `GUIA_BENCHMARK_AVANCADO.md` | Passo a passo do novo script, desde o download. |
+| `VALIDACAO_BENCHMARK.md` | Testes realizados e limites conhecidos. |
+| `examples/` | Queries AirportDB, casos fixos, mapa de motores e capacidade. |
+| `sysbench_sql_runner.py` | Runner simples para carga mista round-robin ou aleatória. |
 | `queries_template.sql` | Modelo para adaptar às tabelas e queries do ambiente. |
 | `GUIA_TESTE_CARGA_MYSQL.md` | Passo a passo de instalação e execução em Linux. |
+| `backup_read_monitor.py` | Monitor de disponibilidade e latência durante backup, com conexões persistentes. |
 
-## Uso rápido
+## Uso rápido do runner simples
 
 1. Copie `queries_template.sql` para um arquivo de workload e ajuste tabelas, colunas e faixas de IDs.
 2. Valide o arquivo sem conectar ao banco:
@@ -79,3 +97,23 @@ overall p99 (ms): ...
 Uma rodada é válida somente quando a quantidade de amostras for igual ao total de eventos, `ignored errors` e `reconnects` forem zero, e não existir `FATAL` nem `WARNING: INCOMPLETE RUN`.
 
 Leia o [guia completo](GUIA_TESTE_CARGA_MYSQL.md) antes de executar a primeira rodada.
+
+## Monitorar leituras durante um backup
+
+Para validar disponibilidade e latência durante um backup, instale o único driver adicional em um ambiente virtual e execute o monitor. Ele mantém 100 conexões abertas e dispara uma query somente-leitura em paralelo a cada dois segundos. A senha é solicitada de forma oculta.
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install PyMySQL
+
+.venv/bin/python backup_read_monitor.py \
+  --host ENDPOINT_DO_BANCO \
+  --database NOME_DO_SCHEMA \
+  --user USUARIO_DE_LEITURA \
+  --threads 100 \
+  --interval 2 \
+  --query "SELECT id FROM SUA_TABELA LIMIT 1" \
+  --log results/backup_read_monitor.csv
+```
+
+Inicie o backup somente depois da mensagem `READY`. Pare o monitor com `Ctrl+C` após o backup; o CSV terá uma linha por rodada, com p50, p95, p99, máximo e contagem de erros.
