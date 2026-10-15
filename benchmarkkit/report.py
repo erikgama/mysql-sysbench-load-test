@@ -36,6 +36,51 @@ def details(title, value):
     return '<details><summary>' + esc(title) + '</summary><pre>' + esc(json.dumps(value, indent=2, ensure_ascii=False, default=str)) + '</pre></details>'
 
 
+def global_variables_section(before, after):
+    """Visible, unfiltered configuration appendix, including collection failures."""
+    snapshots = [before.get('global_variables', {}), after.get('global_variables', {})]
+    values = [Collector.pairs(snapshot) for snapshot in snapshots]
+    body = '<section id="global-variables"><h2>SHOW GLOBAL VARIABLES — configuração completa do MySQL</h2>'
+    body += '<p>Todas as variáveis retornadas pelo servidor, em ordem alfabética e sem filtro ou limite de linhas. Valores globais coletados no início e no final do teste; não são necessariamente os valores de sessão dos workers.</p>'
+    for label, metadata, snapshot, pairs in zip(['Início', 'Final'], [before, after], snapshots, values):
+        if snapshot.get('available'):
+            timestamp = snapshot.get('started_utc', metadata.get('timestamp_utc'))
+            body += '<p><strong>' + label + ':</strong> ' + str(len(pairs)) + ' variáveis · UTC: ' + esc(timestamp) + '.</p>'
+        else:
+            body += '<p class="warning">' + label + ': coleta indisponível — ' + esc(snapshot.get('reason', 'Snapshot não disponível nesta execução.')) + '</p>'
+    body += '<p>Use Ctrl+F (ou ⌘+F no Mac) para procurar uma configuração. “(vazio)” indica um valor vazio retornado pelo MySQL, não uma falha de coleta.</p>'
+    rows = []
+    for name in sorted(set(values[0]) | set(values[1]), key=str.casefold):
+        displayed = []
+        for snapshot, pairs in zip(snapshots, values):
+            if not snapshot.get('available'):
+                value = 'Indisponível'
+            elif name not in pairs:
+                value = 'Não retornada nesta coleta'
+            elif pairs[name] is None:
+                value = 'NULL'
+            else:
+                value = '(vazio)' if pairs[name] == '' else pairs[name]
+            displayed.append(value)
+        if not all(snapshot.get('available') for snapshot in snapshots):
+            state = 'Não comparável'
+        elif name not in values[0]:
+            state = 'Somente no final'
+        elif name not in values[1]:
+            state = 'Somente no início'
+        else:
+            state = 'Sem alteração' if values[0][name] == values[1][name] else 'Alterada'
+        rows.append([name, *displayed, state])
+    if rows:
+        body += table(['Variável', 'Valor no início', 'Valor no final', 'Comparação'], rows)
+    else:
+        body += '<p>Nenhuma variável disponível nos snapshots desta execução.</p>'
+    body += '<p>Fontes originais: <a href="metadata.before.json">metadata.before.json</a>'
+    if after:
+        body += ' · <a href="metadata.after.json">metadata.after.json</a>'
+    return body + '.</p></section>'
+
+
 def chart(title, series, unit):
     """Self-contained SVG; gaps remain gaps, missing samples are not zero."""
     colors = ['#1769d2', '#cc4c02', '#13835e', '#8a3ffc']
@@ -82,7 +127,7 @@ def import_cloud_csv(source):
     return rows
 
 
-STYLE = '''body{font:16px system-ui,sans-serif;color:#203047;background:#f4f7fb;margin:0}main{max-width:1200px;margin:auto;padding:28px}h1,h2,h3{color:#15539c}section{background:white;padding:24px;margin:20px 0;border:1px solid #dbe5f2;border-radius:12px}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid #dde5ef;padding:9px}th{background:#eaf2ff}pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}details{margin:15px 0}summary{cursor:pointer;font-weight:600}a{color:#1769d2}svg{width:100%;max-height:260px}small{color:#566981}.warning{background:#fff3da;padding:12px;border-left:4px solid #d88700}.badge{padding:5px 10px;background:#eaf2ff;border-radius:5px}'''
+STYLE = '''body{font:16px system-ui,sans-serif;color:#203047;background:#f4f7fb;margin:0}main{max-width:1200px;margin:auto;padding:28px}h1,h2,h3{color:#15539c}section{background:white;padding:24px;margin:20px 0;border:1px solid #dbe5f2;border-radius:12px}.scroll{overflow:auto}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;border-bottom:1px solid #dde5ef;padding:9px}th{background:#eaf2ff}pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}details{margin:15px 0}summary{cursor:pointer;font-weight:600}a{color:#1769d2}svg{width:100%;max-height:260px}small{color:#566981}.warning{background:#fff3da;padding:12px;border-left:4px solid #d88700}.badge{padding:5px 10px;background:#eaf2ff;border-radius:5px}#global-variables table{table-layout:fixed}#global-variables th,#global-variables td{overflow-wrap:anywhere;white-space:pre-wrap;vertical-align:top}#global-variables th:first-child{width:30%}#global-variables th:last-child{width:15%}'''
 
 
 def document(title, body):
@@ -96,6 +141,7 @@ def render_report(output, run):
     cloud = json.loads(cloud_file.read_text()) if cloud_file.exists() else []
     body = '<h1>MySQL Benchmark — ' + esc(run['label']) + '</h1><p class="badge">Estado: ' + esc(run['status']) + '</p>'
     body += '<p>' + esc(run['started_utc']) + ' · ' + esc(run['sysbench_version']) + '</p>'
+    body += '<p><a href="#global-variables">Ir para SHOW GLOBAL VARIABLES — todas as configurações no final do relatório</a></p>'
     body += '<p>SQLs e casos fixos, testados individualmente. Percentis do cliente excluem warm-up. Um evento corresponde a uma execucao SQL; nao implica uma transacao de negocio.</p>'
     body += '<section><h2>Cobertura e qualidade dos dados</h2>' + table(['Informacao', 'Estado', 'Detalhe'], coverage_rows(metadata, run, cloud)) + '</section>'
     body += '<p class="warning">Use QPS e percentis deste relatorio, calculados das amostras do workload. O sysbench.log e bruto: seus comandos/QPS incluem preparacao de conexoes e seu p99 nativo pode ser zero/indisponivel. workload_summary.txt traz os valores de referencia de cada fase.</p>'
@@ -219,6 +265,9 @@ def render_report(output, run):
         body += details(name, value)
     body += details('Capacidades e falhas de coleta', run.get('collector_capabilities', {}))
     body += '<p><a href="metadata.after.json">Configuracao final</a> · <a href="run.json">Resultado estruturado</a> · <a href="summary.csv">Resumo CSV</a></p></section>'
+    after_file = output / 'metadata.after.json'
+    after_metadata = json.loads(after_file.read_text()) if after_file.exists() else {}
+    body += global_variables_section(metadata, after_metadata)
     (output / 'report.html').write_text(document('MySQL Benchmark — ' + run['label'], body), encoding='utf-8')
 
 

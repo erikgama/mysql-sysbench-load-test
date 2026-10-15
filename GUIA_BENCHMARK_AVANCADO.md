@@ -148,6 +148,8 @@ As conexões prontas aguardam uma barreira antes da carga. O coletor registra a 
 
 ## 7. Consultar resultados
 
+**No final do HTML há uma tabela aberta de `SHOW GLOBAL VARIABLES`**, com todas as variáveis retornadas pelo servidor, sem filtro nem limite de linhas. Ela mostra valor no início, valor no final e o que mudou. O início do relatório tem um atalho direto para essa seção. Use Ctrl+F (⌘+F no Mac) para localizar, por exemplo, `innodb_buffer_pool_size`. Valores globais são distintos das configurações de sessão dos workers. Se alguma coleta estiver ausente, isso aparece como indisponível, não como uma configuração alterada.
+
 Abra `results/oci_run_01/report.html` no navegador. Ele e independente de internet e nao usa CDN. Na pasta:
 
 Para o primeiro comando de validação, o arquivo será `results/validacao_01/report.html`. Se o Linux não tiver interface gráfica, copie a pasta inteira de resultados para sua máquina e abra o HTML: os links para arquivos brutos dependem da estrutura da pasta.

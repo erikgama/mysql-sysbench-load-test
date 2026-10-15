@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch
 from benchmarkkit.collector import derive, numeric_rows_delta
 from benchmarkkit.core import (build_lua, counter_delta, latency_metrics, load_workload,
                                save_json, summarize_samples, validate_select, warmup_stable)
-from benchmarkkit.report import compare_reports, import_cloud_csv, render_report
+from benchmarkkit.report import compare_reports, global_variables_section, import_cloud_csv, render_report
 from benchmarkkit.runner import choose_engine, execute_phase, warm_up
 from benchmarkkit.quality import comparison_issues, coverage_rows
 from benchmarkkit.runner import write_summary_csv
@@ -183,6 +183,48 @@ class CoreTests(unittest.TestCase):
         html = (self.root / 'report.html').read_text()
         self.assertNotIn('<script>', html)
         self.assertIn('&lt;script&gt;', html)
+
+    def test_global_variables_appendix_is_visible_complete_and_last(self):
+        rows = [{'Variable_name': f'config_{i:04d}', 'Value': '10'} for i in reversed(range(1005))]
+        save_json(self.root / 'metadata.before.json', {'global_variables': {'available': True, 'rows': rows}})
+        after = [dict(row) for row in rows]
+        after[0]['Value'] = '20'
+        save_json(self.root / 'metadata.after.json', {'global_variables': {'available': True, 'rows': after}})
+        run = {'label': 'test', 'status': 'completed', 'started_utc': 'now',
+               'sysbench_version': 'test', 'profile': {}, 'workload_hash': 'x',
+               'workload': {}, 'scenarios': []}
+        render_report(self.root, run)
+        report = (self.root / 'report.html').read_text()
+        self.assertIn('href="#global-variables"', report)
+        appendix = report[report.index('<section id="global-variables">'):]
+        self.assertNotIn('<details>', appendix)
+        self.assertEqual(appendix.count('<tr>'), 1006)
+        self.assertLess(appendix.index('config_0000'), appendix.index('config_1004'))
+        self.assertIn('<td>config_1004</td><td>10</td><td>20</td><td>Alterada</td>', appendix)
+        self.assertEqual(appendix.count('<section'), 1)
+        self.assertTrue(appendix.endswith('</section></main></html>'))
+
+    def test_global_variables_missing_snapshot_is_not_a_configuration_change(self):
+        before = {'global_variables': {'available': True, 'rows': [{'Variable_name': 'x', 'Value': ''}]}}
+        section = global_variables_section(before, {})
+        self.assertIn('<td>x</td><td>(vazio)</td><td>Indisponível</td><td>Não comparável</td>', section)
+        self.assertNotIn('<td>Alterada</td>', section)
+        self.assertNotIn('href="metadata.after.json"', section)
+        failed = global_variables_section({}, {'global_variables': {'available': False, 'reason': 'Access denied'}})
+        self.assertIn('Access denied', failed)
+        self.assertIn('Nenhuma variável disponível', failed)
+
+    def test_global_variables_union_and_values_are_escaped(self):
+        before = {'global_variables': {'available': True, 'rows': [
+            {'Variable_name': 'old', 'Value': '1'}, {'Variable_name': 'same', 'Value': '<script>"&</script>'}]}}
+        after = {'global_variables': {'available': True, 'rows': [
+            {'Variable_name': 'new', 'Value': '2'}, {'Variable_name': 'same', 'Value': '<script>"&</script>'}]}}
+        section = global_variables_section(before, after)
+        self.assertIn('Somente no início', section)
+        self.assertIn('Somente no final', section)
+        self.assertIn('Sem alteração', section)
+        self.assertNotIn('<script>', section)
+        self.assertIn('&lt;script&gt;&quot;&amp;&lt;/script&gt;', section)
 
     def test_compare_excludes_unstable_and_shows_config_differences(self):
         roots = []

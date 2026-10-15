@@ -16,6 +16,8 @@
 
 A [validacao no GitHub Actions](https://github.com/erikgama/mysql-sysbench-load-test/actions/runs/38800977727) passou no commit de codigo `42e6ff7`: **33 testes em Ubuntu/Python 3.10 e 33 em Ubuntu/Python 3.12**, incluindo os dois testes com Sysbench real em dry-run. A CI nao acessa o banco de desenvolvimento.
 
+**Complemento de apresentacao (15/10):** `SHOW GLOBAL VARIABLES` passou a aparecer em tabela aberta no final do HTML, com valores inicial/final, alteracoes, horarios e atalho no topo. Os **36 testes locais** passaram, incluindo tres novos testes de completude (mais de 1.000 variaveis), escaping e coleta ausente. No relatorio real, as **1.001 variaveis** e seus dois valores foram conferidos contra os snapshots, sem truncamento. Apenas o HTML foi regenerado; nao houve nova carga nem alteracao dos dados brutos.
+
 ### Validacao conectada, somente SELECT
 
 | Verificacao | Resultado observado |

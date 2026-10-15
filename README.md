@@ -8,6 +8,8 @@ O novo `mysql_benchmark.py` testa cada query/caso separadamente, com quotas por 
 
 O relatório distingue execução completa, cobertura do diagnóstico e elegibilidade para comparação. Detecta resultados vazios, registra as janelas dos contadores e separa modos/ambientes na comparação. As métricas de referência vêm das amostras do workload; o log nativo do Sysbench é mantido para diagnóstico.
 
+No final do HTML, `SHOW GLOBAL VARIABLES` aparece em uma tabela aberta com todas as variáveis coletadas, valores inicial/final e indicação de alterações — não apenas em JSON expansível.
+
 **Comece pelo [passo a passo do novo script](GUIA_BENCHMARK_AVANCADO.md)**: instalação no Linux, download do projeto, arquivo SQL, execução e leitura do HTML. Não é necessário MySQL Shell nem o cliente `mysql`.
 
 A senha é solicitada de forma oculta. O guia também explica casos fixos, CPU/storage da cloud e comparação de ambientes. Exemplos públicos AirportDB, casos e mapa de motores estão em [`examples/`](examples/). Ajuste-os ao banco do cliente. CPU e outros dados dependem da instrumentação disponível; informações ausentes são identificadas no relatório.
