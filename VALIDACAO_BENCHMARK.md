@@ -14,6 +14,8 @@
 - Retorno vazio, quantidade de amostras, duracao minima e contagem servidor/cliente divergente.
 - CPU desabilitada e cobertura incompleta explicitamente identificadas.
 
+A [validacao no GitHub Actions](https://github.com/erikgama/mysql-sysbench-load-test/actions/runs/38800977727) passou no commit de codigo `42e6ff7`: **33 testes em Ubuntu/Python 3.10 e 33 em Ubuntu/Python 3.12**, incluindo os dois testes com Sysbench real em dry-run. A CI nao acessa o banco de desenvolvimento.
+
 ### Validacao conectada, somente SELECT
 
 | Verificacao | Resultado observado |
