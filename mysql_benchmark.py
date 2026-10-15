@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import math
 import os
 import shutil
 import ssl
@@ -30,6 +31,10 @@ def parser():
     run.add_argument('--threads', type=int, nargs='+', default=[1])
     run.add_argument('--events-per-query', type=int, default=1000,
                      help='Execucoes TOTAIS por query/caso/concorrencia/rodada, divididas entre threads')
+    run.add_argument('--allow-empty-results', action='store_true', help='Permitir SELECTs sem linhas, quando intencionais')
+    run.add_argument('--require-statement-cpu', action='store_true', help='Abortar antes da carga se o consumer de CPU estiver indisponivel; nao altera instrumentacao')
+    run.add_argument('--min-measurement-seconds', type=float, default=30, help='Duracao minima para incluir um cenario na comparacao (nao adiciona eventos)')
+    run.add_argument('--min-tail-samples', type=int, default=1000, help='Amostras minimas para incluir um cenario na comparacao')
     run.add_argument('--repetitions', type=int, default=3)
     run.add_argument('--engine', nargs='+', choices=['innodb', 'heatwave', 'auto', 'mixed'], default=['innodb'])
     run.add_argument('--engine-map', type=Path, help='JSON: {"Q01":"innodb","Q02":"heatwave"}; opcional Q01/C01')
@@ -90,6 +95,10 @@ def main(argv=None):
             p.error('Nao repita concorrencias ou motores no mesmo comando.')
         if args.repetitions < 1 or args.case_count < 1 or args.warmup_stable_windows < 2:
             p.error('repetitions/case-count >=1 e warmup-stable-windows >=2.')
+        numeric = [args.warmup_min_seconds, args.warmup_max_seconds, args.warmup_tolerance,
+                   args.monitor_interval, args.phase_timeout, args.min_measurement_seconds]
+        if not all(math.isfinite(v) for v in numeric) or args.min_measurement_seconds <= 0 or args.min_tail_samples < 1:
+            p.error('Limites precisam ser finitos; min-measurement-seconds > 0 e min-tail-samples >= 1.')
         if (args.warmup_min_seconds < 0 or args.warmup_max_seconds <= 0 or
             args.warmup_min_seconds > args.warmup_max_seconds or args.warmup_window_seconds < 1 or
             args.warmup_tolerance <= 0 or args.warmup_min_samples < 1 or args.warmup_min_events < 1 or

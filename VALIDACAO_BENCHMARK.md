@@ -1,6 +1,47 @@
-# Validacao do benchmark avancado — 14/10/2026
+# Validacao do benchmark avancado
 
-## Verificacoes automatizadas
+## Revisao de correcoes — 15/10/2026
+
+### Codigo e testes automatizados
+
+**33 testes passaram localmente**, incluindo Sysbench real com driver dry-run. A suite verifica tambem:
+
+- Separacao entre modos `heatwave`/`mixed` e entre execucoes com o mesmo rotulo; rejeicao de pastas/run_id duplicados.
+- Identidade de execucao, modo e qualidade no CSV.
+- Warm-up analitico sem bloqueio por leituras fisicas InnoDB variaveis.
+- Barreiras antes/depois da carga, quotas exatas e taxas calculadas no intervalo real dos contadores leves.
+- Timeout unico do processo por fase, incluindo preparacao; carga nao e liberada depois do prazo.
+- Retorno vazio, quantidade de amostras, duracao minima e contagem servidor/cliente divergente.
+- CPU desabilitada e cobertura incompleta explicitamente identificadas.
+
+### Validacao conectada, somente SELECT
+
+| Verificacao | Resultado observado |
+|---|---|
+| Quatro modos, 40 eventos por modo | 160 sucessos, zero erros; InnoDB/auto: 40 PRIMARY cada; HeatWave/mixed: 40 SECONDARY cada. |
+| Seis queries, 4 conexoes, 40 eventos/query | 240 sucessos, zero erros e nenhum retorno vazio; contagens medidas por digest coincidiram. |
+| Resultado vazio intencional | SQL completou, mas o benchmark retornou 1 e registrou `empty_result`, como esperado. |
+| CPU obrigatoria com consumer desabilitado | Retorno 1 antes da carga, zero cenarios executados. Nenhuma instrumentacao global alterada. |
+| Warm-up padrao + 1.000 eventos, 4 conexoes | 60,378 s efetivos de aquecimento e 1.512 execucoes de warm-up. Depois, 1.000/1.000 sucessos medidos em 39,666 s, zero erros. |
+| Smoke final apos ajuste de timeout | Mais 5/5 sucessos, uma conexao, sem warm-up; apenas validacao funcional. |
+
+**Ressalva da rodada de 1.000 eventos:** o cliente registrou 1.000 sucessos/linhas retornadas e o delta de `SUM_ROWS_SENT` tambem foi 1.000, mas `COUNT_STAR` aumentou 992. Os snapshots leves e detalhados preservaram essa divergencia. A causa nao foi determinada; nao e prova de perda de queries. O cenario ficou corretamente fora da comparacao com `server_client_count_conflict`. Houve divergencias por digest tambem em nove janelas de warm-up; os registros originais foram mantidos.
+
+Uma auditoria independente recalculou os percentis p50/p95/p99, media, QPS, quotas por thread, linhas retornadas e intervalos a partir de **4.002 amostras em 45 fases**, incluindo warm-up e o caso vazio intencional. Foram conferidos os CSVs originais contra o arquivo comprimido, os links do HTML, a identidade do CSV e as divergencias de servidor. O smoke final de cinco eventos e adicional a essa contagem.
+
+O intervalo dos contadores agora e separado da preparacao: em um cenario, carga de **6,203 s**, contadores leves de **6,528 s** e snapshots detalhados de **9,874 s**. Na rodada de 1.000 eventos, foram **39,666 / 39,990 / 43,505 s**, respectivamente. O intervalo leve ainda inclui round trips do coletor; contadores de instancia nao representam exclusivamente o workload.
+
+### Limites que permanecem explicitos
+
+- Rodadas curtas dos quatro modos/seis queries sao testes funcionais e ficam fora das medianas pelos limites padrao de amostras/duracao. A rodada de 1.000 eventos tambem foi excluida, pela divergencia por digest. **Esta validacao nao e um resultado comparativo entre clouds.**
+- CPU por statement estava indisponivel, havia instrumentos de sincronizacao desabilitados e nao foi importado CSV cloud. O relatorio mostra essas lacunas; nao inventa valores nem habilita instrumentacao global.
+- Os numeros do `sysbench.log` permanecem brutos. QPS/percentis de referencia estao no HTML, `client_summary.json` e `workload_summary.txt`; p99 nativo zero nao foi tratado como latencia zero.
+- A instalacao local padrao apresentou erro TLS 2026. A validacao conectada usou o binario local previamente funcional e TLS desligado no ambiente de desenvolvimento autorizado. TLS continua ligado por padrao no runner; a falha dessa biblioteca local nao foi corrigida nesta revisao.
+- Resultados e dados privados continuam apenas em `results/`, ignorados pelo Git. Os exemplos publicos nao incluem endpoint nem senha.
+
+## Historico — 14/10/2026
+
+### Verificacoes automatizadas
 
 23 testes passaram localmente, incluindo:
 
@@ -18,7 +59,7 @@ python3 -m unittest discover -s tests -v
 
 A [validação no GitHub Actions](https://github.com/erikgama/mysql-sysbench-load-test/actions/runs/38647938321) passou em Ubuntu com Python **3.10 e 3.12**, no commit `eb64c04`: 23 testes em cada versão, incluindo Sysbench real com driver dry-run. Essa CI não conecta a um banco real.
 
-## Verificacoes reais, somente-leitura
+### Verificacoes reais, somente-leitura
 
 AirportDB em MySQL `26.7.0-cloud`, no ambiente autorizado pelo usuario. Nao houve ALTER, carga de tabelas, reset de contadores nem ativacao de instrumentacao.
 
@@ -36,7 +77,7 @@ Os deltas de COUNT_STAR coincidiram com os eventos do cliente. Sao evidencias po
 
 Uma verificacao adicional no RAPID confirmou captura de conexao, duracao monotonic e linhas retornadas no cliente. Um SELECT intencional em tabela inexistente confirmou captura de errno 1146/SQLSTATE 42S02, zero sucessos, sem retries e resultado incompleto. O HTML foi aberto e conferido no navegador local.
 
-## Limites desta validacao
+### Limites desta validacao
 
 - Smoke tests usam poucas amostras e criterios curtos de warm-up (janelas de 1 ou 2 segundos, tolerancia 50%). **Nao sao resultados de performance para comparar clouds**, nem validam dimensionamento ou p99 representativo.
 - O consumer `events_statements_cpu` estava desabilitado: CPU por statement ficou indisponivel. Nao foi habilitado automaticamente.

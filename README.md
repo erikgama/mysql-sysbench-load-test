@@ -6,6 +6,8 @@ Kit genérico para executar testes de carga e estresse em MySQL com Python e Sys
 
 O novo `mysql_benchmark.py` testa cada query/caso separadamente, com quotas por thread, warm-up por estabilidade, coleta SQL antes/durante/depois e relatório HTML independente de internet. Suporta InnoDB, HeatWave forçado, escolha automática e mapa de destino por query. O runner simples abaixo continua disponível.
 
+O relatório distingue execução completa, cobertura do diagnóstico e elegibilidade para comparação. Detecta resultados vazios, registra as janelas dos contadores e separa modos/ambientes na comparação. As métricas de referência vêm das amostras do workload; o log nativo do Sysbench é mantido para diagnóstico.
+
 **Comece pelo [passo a passo do novo script](GUIA_BENCHMARK_AVANCADO.md)**: instalação no Linux, download do projeto, arquivo SQL, execução e leitura do HTML. Não é necessário MySQL Shell nem o cliente `mysql`.
 
 A senha é solicitada de forma oculta. O guia também explica casos fixos, CPU/storage da cloud e comparação de ambientes. Exemplos públicos AirportDB, casos e mapa de motores estão em [`examples/`](examples/). Ajuste-os ao banco do cliente. CPU e outros dados dependem da instrumentação disponível; informações ausentes são identificadas no relatório.

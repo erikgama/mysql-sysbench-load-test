@@ -6,10 +6,12 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from .collector import Collector, Sampler, derive
 from .core import build_lua, save_json, summarize_samples, utc_now, warmup_stable
+from .quality import comparison_issues
 
 
 ENGINE_SETTINGS = {"innodb": "OFF", "heatwave": "FORCED", "auto": "ON"}
@@ -34,12 +36,12 @@ def execute_phase(args, collector, metadata, case, key, engine, threads, events,
                  "directory": str(directory), "client": {"successes": 0, "errors": 0}}
         save_json(directory / "phase.json", phase)
         return phase
-    save_json(directory / "before.json", before := collector.snapshot(args.database, key))
     lua = directory / "workload.lua"
-    lua.write_text(build_lua(case["sql"], directory, threads, events, args.query_timeout_ms, setting), encoding="utf-8")
+    lua.write_text(build_lua(case["sql"], directory, threads, events, args.query_timeout_ms, setting,
+                             gated=True, duration_seconds=seconds), encoding="utf-8")
     sampler = Sampler(connection_args, password, directory, args.database, args.monitor_interval)
     command = [args.sysbench, str(lua.resolve()), f"--threads={threads}", "--events=0",
-               f"--time={seconds}", "--report-interval=1", "--percentile=99",
+               "--time=0", "--report-interval=1", "--percentile=99",
                "--mysql-ignore-errors=all", "--db-ps-mode=disable",
                f"--mysql-host={args.host}", f"--mysql-port={args.port}",
                f"--mysql-user={args.user}", f"--mysql-db={args.database}",
@@ -53,8 +55,29 @@ def execute_phase(args, collector, metadata, case, key, engine, threads, events,
     interrupted = False
     process = None
     reader = None
+    process_started = process_finished = None
     rc = -1
-    sampler.start()
+    sampler_started = False
+    before = None
+    active_before = active_after = None
+    load_started = load_finished = None
+
+    def remaining_process_time(maximum):
+        remaining = process_started + args.phase_timeout - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, args.phase_timeout)
+        return min(maximum, remaining)
+
+    def await_workers(prefix, limit):
+        deadline = time.monotonic() + remaining_process_time(limit)
+        while len(list(directory.glob(prefix + '-*'))) < threads:
+            if process.poll() is not None:
+                return False
+            if time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired(command, limit)
+            time.sleep(.005)
+        return True
+
     try:
         # Credentials never enter process arguments or retained Lua/log files.
         with tempfile.TemporaryDirectory(prefix="mysql-benchmark-secret-") as secret_dir:
@@ -63,17 +86,37 @@ def execute_phase(args, collector, metadata, case, key, engine, threads, events,
             descriptor = os.open(config, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 handle.write("mysql-password=" + password + "\n")
+            process_started = time.monotonic()
             process = subprocess.Popen([command[0], f"--config-file={config}", *command[1:], "run"],
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             def drain():
                 with (directory / "sysbench.log").open("w", encoding="utf-8") as handle:
+                    handle.write("# RAW SYSBENCH LOG: SQL counts/QPS include connection setup. Native p99 may be unavailable.\n"
+                                 "# Authoritative workload metrics: workload_summary.txt and client_summary.json.\n"
+                                 "# --events=0/--time=0: Lua enforces quotas/duration; Python enforces phase timeout.\n")
                     for line in process.stdout:
                         handle.write(line.replace(password, "[REDACTED]") if password else line)
                         handle.flush()
             reader = threading.Thread(target=drain, daemon=True)
             reader.start()
             try:
-                rc = process.wait(timeout=timeout)
+                if await_workers('ready', args.phase_timeout):
+                    # No workload SQL runs during setup or the deep baseline snapshot.
+                    save_json(directory / "before.json", before := collector.snapshot(args.database, key))
+                    sampler.start()
+                    sampler_started = True
+                    save_json(directory / "load.before.json", active_before := collector.boundary_snapshot(args.database, key))
+                    remaining_process_time(args.phase_timeout)
+                    load_started = {"utc": utc_now(), "monotonic": time.monotonic()}
+                    (directory / 'start.signal').touch()
+                    done = await_workers('done', timeout)
+                    load_finished = {"utc": utc_now(), "monotonic": time.monotonic(), "all_workers_done": done}
+                    # Connections remain open, with workers blocked and no workload in flight.
+                    save_json(directory / "load.after.json", active_after := collector.boundary_snapshot(args.database, key))
+                    sampler.stop()
+                    sampler_started = False
+                    (directory / 'finish.signal').touch()
+                rc = process.wait(timeout=remaining_process_time(30))
             except subprocess.TimeoutExpired:
                 timed_out = True
                 process.terminate()
@@ -91,12 +134,25 @@ def execute_phase(args, collector, metadata, case, key, engine, threads, events,
                     process.kill()
                     rc = process.wait()
             finally:
+                (directory / 'finish.signal').touch()
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                process_finished = time.monotonic()
                 reader.join(timeout=5)
                 if process.stdout:
                     process.stdout.close()
     finally:
-        sampler.stop()
+        if sampler_started:
+            sampler.stop()
     after = collector.snapshot(args.database, key)
+    if before is None:
+        before = {"unix": time.time(), "global_status": {"available": False, "reason": "Workers did not initialize."}}
+        save_json(directory / "before.json", before)
     save_json(directory / "after.json", after)
     client = summarize_samples(directory, threads, events)
     sessions = {}
@@ -107,13 +163,25 @@ def execute_phase(args, collector, metadata, case, key, engine, threads, events,
         s.get("use_secondary_engine") == setting for s in sessions.values()))
     tls_verified = len(sessions) == threads and all(s.get("Ssl_cipher") for s in sessions.values())
     diagnostic = derive(before, after, metadata["cpu_consumer_enabled"])
+    diagnostic['deep_snapshot_seconds'] = diagnostic['seconds']
+    if active_before is not None and active_after is not None:
+        active = derive(active_before, active_after, metadata["cpu_consumer_enabled"])
+        for field in ['seconds', 'global_counter_delta', 'global_rates_per_second',
+                      'server_restart_detected', 'buffer_pool_hit_pct_interval', 'statements']:
+            diagnostic[field] = active[field]
+    diagnostic['counter_window'] = {
+        'source': 'load_boundary_snapshots' if active_after is not None else 'unavailable',
+        'load_start': load_started, 'load_finish': load_finished,
+        'query_seconds': client.get('query_window_seconds'),
+        'counter_seconds': diagnostic['seconds'] if active_after is not None else None,
+        'scope': 'Instance-wide boundary samples bracket workload; include sampler/background and boundary round trips. Deep waits/file/table snapshots have a wider window.'}
     save_json(directory / "diagnostics.json", diagnostic)
     log = (directory / "sysbench.log").read_text(encoding="utf-8") if (directory / "sysbench.log").exists() else ""
     sql_valid = bool(rc == 0 and not timed_out and not interrupted and "FATAL" not in log and
                      client["successes"] > 0 and client["errors"] == 0 and
                      client["malformed_or_duplicate"] == 0 and client["quota_complete"] and
                      routing_verified and (args.mysql_ssl == "off" or tls_verified))
-    telemetry_valid = bool(before["global_status"].get("available") and after["global_status"].get("available") and
+    telemetry_valid = bool(active_before and active_after and active_before["global_status"].get("available") and active_after["global_status"].get("available") and
                            not diagnostic["server_restart_detected"] and
                            not diagnostic["global_counter_delta"]["decreased_or_reset"])
     statement_rows = diagnostic["statements"].get("rows", [])
@@ -129,19 +197,35 @@ def execute_phase(args, collector, metadata, case, key, engine, threads, events,
             if engine == "innodb" and secondary > 0:
                 observed["scope_conflict"] = True
     requests = diagnostic["global_counter_delta"]["values"].get("Innodb_buffer_pool_reads")
+    result_problem = None
+    if client['successes'] and client.get('client_rows_returned') is None:
+        result_problem = 'row_count_unavailable'
+    elif client.get('empty_result_successes') and not getattr(args, 'allow_empty_results', False):
+        result_problem = 'empty_result'
+    if result_problem:
+        sql_valid = False
     phase = {"valid": sql_valid, "status": "completed" if sql_valid else "incomplete",
+             "result_validation": result_problem or ('passed' if client['successes'] else 'not_verified'),
              "fatal_messages": [line for line in log.splitlines() if "FATAL" in line][:20],
-             "telemetry_complete": telemetry_valid, "engine": engine, "session_engine": setting,
+             "counter_window_valid": telemetry_valid, "engine": engine, "session_engine": setting,
              "observed_engine": observed, "threads": threads, "events": events or None,
-             "start_utc": phase_start, "end_utc": utc_now(), "process_seconds": time.monotonic() - started,
+             "start_utc": phase_start, "end_utc": utc_now(), "phase_total_seconds": time.monotonic() - started,
+             "process_seconds": process_finished - process_started if process_finished is not None else None,
              "timed_out": timed_out, "interrupted": interrupted, "exit_code": rc,
              "client": client, "diagnostics": diagnostic,
-             "physical_reads_per_query": requests / client["successes"] if requests is not None and client["successes"] else None,
+             "physical_reads_per_query": requests / client["successes"] if telemetry_valid and requests is not None and client["successes"] else None,
              "worker_sessions": sessions, "session_routing_verified": routing_verified,
              "tls_requested": args.mysql_ssl, "tls_cipher_present_all_workers": bool(tls_verified),
              "directory": str(directory), "automatic_retries": 0,
              "connections_recreated_for_each_phase": True}
     save_json(directory / "phase.json", phase)
+    (directory / 'workload_summary.txt').write_text(
+        'AUTHORITATIVE WORKLOAD METRICS (setup excluded; successful samples only in percentiles)\n'
+        + '\n'.join(f'{k}: {client.get(k)}' for k in ['expected_events', 'attempts', 'successes', 'errors',
+              'client_rows_returned', 'empty_result_successes', 'query_window_seconds', 'qps', 'avg_ms',
+              'p50_ms', 'p95_ms', 'p99_ms', 'max_ms'])
+        + f'\nStatus: {phase["status"]}; result validation: {phase["result_validation"]}\n'
+        + 'Sysbench raw QPS includes setup; native p99 is not used.\n', encoding='utf-8')
     if interrupted:
         raise KeyboardInterrupt
     return phase
@@ -191,8 +275,9 @@ def perform(args, workload, output, password, connection_args, environment, mapp
     profile = {k: getattr(args, k) for k in ["threads", "events_per_query", "repetitions", "engine",
                "warmup_min_seconds", "warmup_max_seconds", "warmup_window_seconds", "warmup_stable_windows",
                "warmup_tolerance", "warmup_min_events", "warmup_min_samples", "skip_warmup", "allow_unstable_warmup",
-               "query_timeout_ms", "monitor_interval"]}
-    run = {"format_version": 1, "label": args.label, "started_utc": utc_now(), "status": "running",
+               "query_timeout_ms", "monitor_interval", "allow_empty_results", "require_statement_cpu",
+               "min_measurement_seconds", "min_tail_samples"]}
+    run = {"format_version": 2, "run_id": str(uuid.uuid4()), "label": args.label, "started_utc": utc_now(), "status": "running",
            "workload_hash": workload["hash"], "workload": workload, "profile": profile,
            "engine_map": mapping, "environment": environment, "database": args.database,
            "endpoint": args.host, "sysbench_version": subprocess.check_output([args.sysbench, "--version"], text=True).strip(),
@@ -201,6 +286,8 @@ def perform(args, workload, output, password, connection_args, environment, mapp
     try:
         if not metadata["server"].get("available"):
             raise RuntimeError("Nao foi possivel conectar ao banco/coletar a identidade; veja metadata.before.json.")
+        if getattr(args, 'require_statement_cpu', False) and not metadata['cpu_consumer_enabled']:
+            raise RuntimeError('CPU por statement requerida, mas events_statements_cpu esta desabilitado ou inacessivel. Nenhuma carga executada.')
         for query in workload["queries"]:
             for case in query["cases"]:
                 key = query["id"] + "/" + case["id"]
@@ -228,14 +315,17 @@ def perform(args, workload, output, password, connection_args, environment, mapp
                                              scenario_dir / "warmup", password, connection_args)
                             scenario["warmup"] = warmup
                             if not warmup["stable"] and not args.skip_warmup and not args.allow_unstable_warmup:
-                                scenario.update(status="warmup_not_stabilized", valid=False)
+                                result_problem = next((w.get('result_validation') for w in warmup.get('windows', []) if w.get('result_validation') in ('empty_result', 'row_count_unavailable')), None)
+                                scenario.update(status=result_problem or "warmup_not_stabilized", valid=False)
                                 continue
                             measured = execute_phase(args, collector, metadata, case, key, engine, threads,
                                                      args.events_per_query, 0, scenario_dir / "measured", password, connection_args)
                             scenario["measured"] = measured
                             scenario.update(status=measured["status"], valid=measured["valid"],
                                             warmed_comparison=measured["valid"] and warmup["stable"])
-                            print(f"  {scenario['status']}: p95={measured['client'].get('p95_ms')} ms; p99={measured['client'].get('p99_ms')} ms", flush=True)
+                            scenario['comparison_issues'] = comparison_issues(run, scenario)
+                            scenario['comparison_eligible'] = not scenario['comparison_issues']
+                            print(f"  {scenario['status']}: sucessos={measured['client']['successes']}; workload QPS={measured['client'].get('qps')}; p95={measured['client'].get('p95_ms')} ms; p99={measured['client'].get('p99_ms')} ms", flush=True)
                             save_json(output / "run.json", run)
                             render_report(output, run)
         run["status"] = "completed" if run["scenarios"] and all(s.get("valid") for s in run["scenarios"]) else "incomplete"
@@ -257,7 +347,8 @@ def perform(args, workload, output, password, connection_args, environment, mapp
 
 
 def write_summary_csv(output, run):
-    fields = ["query", "case", "engine", "threads", "repetition", "status", "warmup", "successes", "errors",
+    fields = ["run_id", "label", "scenario_id", "query", "case", "mode", "engine", "threads", "repetition", "status", "warmup", "successes", "errors",
+              "client_rows_returned", "empty_result_successes", "query_window_seconds", "counter_window_seconds", "comparison_eligible", "comparison_issues",
               "qps", "avg_ms", "p50_ms", "p95_ms", "p99_ms", "max_ms", "cpu_ms_per_exec"]
     with (Path(output) / "summary.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -266,7 +357,11 @@ def write_summary_csv(output, run):
             m = s.get("measured", {})
             c = m.get("client", {})
             statements = m.get("diagnostics", {}).get("statements", {}).get("rows", [])
-            row = {"query": s["query_id"], "case": s["case_id"], "engine": s["engine"],
+            row = {"run_id": run.get('run_id'), "label": run['label'], "scenario_id": s['id'],
+                   "query": s["query_id"], "case": s["case_id"], "mode": s.get('mode', s['engine']), "engine": s["engine"],
+                   "counter_window_seconds": m.get('diagnostics', {}).get('seconds'),
+                   "comparison_eligible": not comparison_issues(run, s),
+                   "comparison_issues": ';'.join(comparison_issues(run, s)),
                    "threads": s["threads"], "repetition": s["repetition"], "status": s["status"],
                    "warmup": s.get("warmup", {}).get("status"),
                    "cpu_ms_per_exec": statements[0].get("cpu_ms_per_exec") if len(statements) == 1 else None}

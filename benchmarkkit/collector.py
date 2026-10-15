@@ -30,6 +30,7 @@ class Collector:
 
     def rows(self, label, sql, params=None):
         started = time.monotonic()
+        timing = {"started_utc": utc_now(), "started_unix": time.time(), "started_monotonic": started}
         try:
             if self.connection is None:
                 self.connect()
@@ -37,14 +38,16 @@ class Collector:
                 cursor.execute(sql, params)
                 rows = cursor.fetchall()
             self.capabilities[label] = {"available": True}
-            return {"available": True, "rows": rows,
+            return {"available": True, "rows": rows, **timing,
+                    "finished_monotonic": time.monotonic(),
                     "collection_ms": (time.monotonic() - started) * 1000}
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             if self.secret:
                 error = error.replace(self.secret, "[REDACTED]")
             self.capabilities[label] = {"available": False, "reason": error}
-            return {"available": False, "reason": error,
+            return {"available": False, "reason": error, **timing,
+                    "finished_monotonic": time.monotonic(),
                     "collection_ms": (time.monotonic() - started) * 1000}
 
     @staticmethod
@@ -139,6 +142,14 @@ class Collector:
         result["collection_ms"] = (time.monotonic() - started) * 1000
         return result
 
+    def boundary_snapshot(self, database, key):
+        """Small sample while workers wait at the start/end barrier."""
+        result = self.snapshot(database, deep=False)
+        digest = self.query_digests.get(key, {}).get("digest")
+        result["statements"] = self.rows("statements", "SELECT * FROM performance_schema.events_statements_summary_by_digest WHERE SCHEMA_NAME=%s AND DIGEST=%s", (database, digest)) if digest else {
+            "available": False, "reason": "SQL digest mapping unavailable."}
+        return result
+
 
 def numeric_rows_delta(before, after, group):
     if not before.get("available") or not after.get("available"):
@@ -168,7 +179,7 @@ COUNTERS = ["Queries", "Questions", "Com_select", "Com_insert", "Com_update", "C
 
 def derive(before, after, cpu_enabled=False):
     old, new = Collector.pairs(before.get("global_status", {})), Collector.pairs(after.get("global_status", {}))
-    elapsed = after.get("monotonic", after["unix"]) - before.get("monotonic", before["unix"])
+    elapsed = after.get("global_status", {}).get("started_monotonic", after.get("monotonic", after["unix"])) - before.get("global_status", {}).get("started_monotonic", before.get("monotonic", before["unix"]))
     diffs = counter_delta(old, {k: new[k] for k in COUNTERS if k in new})
     d = diffs["values"]
     restarted = bool(old.get("Uptime") and new.get("Uptime") and float(new["Uptime"]) < float(old["Uptime"]))

@@ -46,6 +46,8 @@ SELECT COUNT(*) FROM outra_tabela WHERE data >= '2026-10-01';
 
 As tabelas acima são ilustrativas: substitua por tabelas e colunas reais. Para um banco AirportDB já populado, existe [`examples/airportdb_individual.sql`](examples/airportdb_individual.sql), com seis SELECTs. O projeto não cria nem popula a base. Confirme que os IDs escolhidos existem; repetir consultas sem linhas pode produzir uma carga pouco representativa.
 
+O runner agora verifica as linhas retornadas em cada execução. Um resultado vazio interrompe a validação do cenário (`empty_result`), inclusive no warm-up. Quando a ausência de linhas faz parte do teste, passe `--allow-empty-results`; o relatório mantém a contagem e o aviso. Uma agregação como `COUNT(*) = 0` retorna uma linha e exige interpretação do operador: o runner verifica a quantidade de linhas, não a correção dos valores de negócio.
+
 Cada query vira Q01, Q02 etc. **O teste executa cada query individualmente**, sem sorteio. O mesmo SQL e os mesmos parametros sao repetidos. Os SQLs e parametros concretos ficam em `workload.json`.
 
 O token `{{RAND_INT:id:1:100000}}` tambem e aceito. Seus valores sao gerados **uma unica vez**, antes da carga, com `--seed 42`. `--case-count 3` gera tres casos fixos, testados separadamente. Repetir um token com o mesmo nome no SQL usa o mesmo valor. Funcoes SQL como RAND(), NOW() e UUID() continuam variando no servidor e geram aviso de nao determinismo.
@@ -95,6 +97,8 @@ Copie e ajuste `examples/environment.json` em `environment.local.json` e passe e
 
 `--monitor-user USUARIO_COLETA` permite um usuario separado. A senha adicional e lida de `MYSQL_MONITOR_PASSWORD` ou solicitada. A coleta usa SHOW e SELECT; ela nao ativa instrumentos, nao reseta contadores nem carrega tabelas no cluster. O destino do SQL, read-only e timeout sao configuracoes de **sessao**.
 
+Se a análise depende de CPU por query, acrescente `--require-statement-cpu`. O teste será interrompido antes de gerar carga quando `events_statements_cpu` estiver desabilitado ou inacessível. Combine com o DBA a instrumentação necessária; o script não altera configurações globais automaticamente. CPU total da máquina, memória e IOPS da cloud continuam dependendo do CSV da seção 8.
+
 TLS e solicitado por padrao. `--ssl-ca CA.pem` verifica o certificado no coletor Python; o suporte/verificacao do Sysbench depende de sua biblioteca cliente. O cipher negociado de cada conexao de carga e registrado nos CSVs `session-*.csv`. `--mysql-ssl off` desativa a solicitacao. Nao confundir TLS solicitado com verificacao comprovada do certificado.
 
 ## 5. Escolher onde as queries executam
@@ -138,6 +142,10 @@ Se nao estabilizar, o cenario fica **warmup_not_stabilized** e a medicao nao com
 
 As conexoes sao recriadas entre janelas e na fase medida. O cache do servidor e preservado; nao ha FLUSH/reinicio. Isso aquece o caminho da query, nao garante toda a base na memoria. Os criterios mostram estabilidade observada, nao capacidade ilimitada ou equivalencia perfeita de cache entre ambientes.
 
+As conexões prontas aguardam uma barreira antes da carga. O coletor registra a configuração e uma amostra leve de contadores; então libera os workers. Ao terminar, os workers aguardam a amostra final antes de desconectar. A duração do warm-up começa após a liberação, excluindo preparação e snapshots detalhados. Para HeatWave/auto, leituras físicas InnoDB não bloqueiam a estabilidade, mesmo quando disponíveis e variáveis.
+
+`--phase-timeout` limita o processo cliente inteiro de cada fase, incluindo preparação e barreiras; não reinicia o prazo ao começar as queries. A coleta final e o encerramento podem acrescentar tempo ao comando.
+
 ## 7. Consultar resultados
 
 Abra `results/oci_run_01/report.html` no navegador. Ele e independente de internet e nao usa CDN. Na pasta:
@@ -149,6 +157,8 @@ Para o primeiro comando de validação, o arquivo será `results/validacao_01/re
 - `scenarios/.../explain.json`: EXPLAIN por caso e destino, fora da medicao.
 - `scenarios/.../warmup/window-.../`: evidencias de cada janela.
 - `scenarios/.../measured/`: snapshots, deltas, timeline MySQL, log Sysbench, configuracoes das sessoes e amostras individuais completas em CSV e CSV.gz.
+- `scenarios/.../measured/workload_summary.txt`: resumo de referência do workload, com eventos, linhas retornadas, QPS e percentis.
+- `scenarios/.../measured/load.before.json` e `load.after.json`: amostras leves delimitando a carga, separadas dos snapshots detalhados.
 
 Leia nesta ordem:
 
@@ -159,7 +169,17 @@ Leia nesta ordem:
 
 O processo retorna código 0 se a execução terminou completa; uma execução incompleta retorna 1. `--skip-warmup` pode completar sem erros, mas **não** certifica aquecimento. Esse código não substitui a verificação de comparabilidade no relatório.
 
+**Execução completa não significa diagnóstico completo.** O início do HTML mostra a cobertura de CPU, esperas, memória, métricas cloud e descrição do ambiente. Dados ausentes aparecem como indisponíveis ou parciais.
+
+Para entrar nas medianas de comparação, um cenário precisa de execução válida, warm-up estabilizado, verificação de linhas e, por padrão, **1.000 amostras e 30 segundos de carga medida**. Ajuste os critérios com `--min-tail-samples` e `--min-measurement-seconds` quando houver justificativa metodológica. Esses mínimos não garantem precisão estatística do p99. O runner não aumenta os eventos automaticamente: se a rodada ficou curta, aumente `--events-per-query` na próxima execução. Testes funcionais curtos continuam gerando relatório, mas ficam fora das medianas.
+
+**Leia o QPS e os percentis do relatório ou de `workload_summary.txt`.** O `sysbench.log` é um log bruto: seus totais de comandos incluem preparação, sua duração pode incluir as barreiras de coleta e seu p99 nativo pode ficar indisponível/zero conforme o binário. O runner calcula as métricas do workload diretamente das amostras e identifica essa diferença no próprio log.
+
+**Janelas de tempo:** o HTML mostra separadamente a duração das queries, o intervalo dos contadores leves e o intervalo ampliado dos snapshots detalhados. Os contadores leves delimitam a carga, mas incluem os round trips da coleta e atividade de outras sessões. Waits e I/O detalhados usam snapshots mais amplos. Não interprete essas taxas como IOPS exclusivos das queries. Resultados históricos continuam identificados como snapshots antigos; regenerar o HTML não recria uma coleta ausente.
+
 Latencias sao medidas no cliente ao redor de con:query, incluindo transferencia do resultado conforme o driver. Duracoes usam clock monotonic. Falhas nao entram nos percentis de sucesso. Retries automaticos estao desabilitados: a primeira falha SQL aborta a fase, preservando amostras e indicando incompletude. Cada worker recebe uma quota fixa e as amostras sao verificadas por thread/sequence.
+
+Use os timestamps UTC para correlacionar cliente, coletor e cloud. Valores absolutos dos relógios monotônicos Lua e Python podem ter origens diferentes, especialmente no macOS; servem para calcular durações dentro de cada fonte, não para comparar diretamente os dois relógios.
 
 O relatorio mostra latencia por segundo, conexoes, cache, leituras, writes, temporarios, ordenacoes, top waits, I/O por tabela/arquivo e detalhes de statements. Metricas indisponiveis mostram o motivo. Os snapshots completos preservam memoria instrumentada, locks, InnoDB status e thread pool quando acessiveis. Limites de linhas da coleta sao registrados.
 
@@ -196,7 +216,7 @@ Use o mesmo arquivo SQL/casos, mesmos parametros, concorrencia, quantidade de ev
   --output results/comparacao_01.html
 ```
 
-A comparacao verifica hash de workload, perfil e mapa de motores; apresenta medianas das rodadas completas e aquecidas e variaveis globais diferentes. Mediana de p99 de rodadas nao e p99 de amostras combinadas. Cenarios incompletos/nao aquecidos nao entram nas medianas.
+A comparação verifica hash de workload, perfil e mapa de motores; apresenta medianas apenas dos cenários elegíveis e lista os excluídos com seus motivos. Modos `heatwave` e `mixed` permanecem separados, mesmo usando o mesmo motor. Cada pasta de execução tem identidade própria: rótulos iguais não juntam ambientes. Pastas duplicadas ou cópias com o mesmo `run_id` são rejeitadas. O `summary.csv` preserva `run_id`, cenário, modo e critérios de inclusão. Mediana de p99 de rodadas não é p99 de amostras combinadas.
 
 Antes de uma POC, faca uma rodada pequena para validar permissoes, instrumentacao e tempo do coletor. Compare a mesma carga com o runner simples/sem diagnostico para quantificar overhead. O benchmark registra coleta_ms; nao presume overhead zero. Em uma unica conexao, o cenario mede repeticao individual; multiplas threads medem concorrencia fechada, nao uma taxa fixa de chegada de producao.
 
@@ -210,6 +230,9 @@ Antes de uma POC, faca uma rodada pequena para validar permissoes, instrumentaca
 | Warm-up não estabilizou | Leia as janelas; verifique carga externa, custo da query e se o limite de tempo é suficiente. Não esconda o aviso. |
 | CPU ou waits indisponíveis | Versão, privilégios e instrumentação habilitada. Ausência de métrica não significa consumo zero. |
 | Query falhou no modo HeatWave | Elegibilidade, tabelas carregadas/atualizadas e erro do servidor. FORCED não troca silenciosamente para InnoDB. |
+| `empty_result` | Ajuste os valores para registros existentes; use `--allow-empty-results` apenas quando o retorno vazio for intencional. |
+| `too_few_samples` / `measurement_too_short` | Aumente eventos e repita; a execução pode ter terminado corretamente, mas foi excluída das medianas. |
+| `server_client_count_conflict` | O delta por digest divergiu dos sucessos do cliente. Examine as duas evidências e a instrumentação/carga externa; não presuma perda de queries nem altere os contadores para fazê-los coincidir. O cenário fica fora da comparação. |
 
 **Privacidade:** `results/` fica fora do Git, mas contém SQLs completos, parâmetros, host, metadados e mensagens do banco. Trate essa pasta como informação do cliente; revise antes de compartilhar. Arquivos com nomes `environment.local.json`, `cases.local.json` e `engine_map.local.json` também são ignorados. O arquivo SQL personalizado não é ignorado automaticamente: não publique SQLs privados nem senhas. O relatório é inspirado em diagnósticos de banco, não é um Oracle AWR nem reproduz todas as suas métricas.
 

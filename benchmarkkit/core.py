@@ -144,7 +144,7 @@ def summarize_samples(directory, threads, events):
     timeline = {}
     quotas = {i: events // threads + int(i < events % threads) for i in range(threads)} if events else None
     counts = {i: 0 for i in range(threads)}
-    returned_rows, returned_available = 0, True
+    returned_rows, returned_available, empty_results = 0, True, 0
     with gzip.open(directory / "client_samples.csv.gz", "wt", newline="", encoding="utf-8") as out:
         writer = csv.DictWriter(out, fieldnames=fields)
         writer.writeheader()
@@ -156,7 +156,7 @@ def summarize_samples(directory, threads, events):
                         start, elapsed = float(row["start_unix"]), float(row["elapsed_ms"])
                         monotonic = float(row.get("start_monotonic") or start)
                         ok = row["success"] == "1"
-                        if tid not in counts or seq < 1 or elapsed < 0 or not math.isfinite(elapsed) or not math.isfinite(start):
+                        if tid not in counts or seq < 1 or elapsed < 0 or not math.isfinite(elapsed) or not math.isfinite(start) or not math.isfinite(monotonic):
                             raise ValueError("invalid sample")
                         if (tid, seq) in seen:
                             raise ValueError("duplicate sample")
@@ -173,6 +173,7 @@ def summarize_samples(directory, threads, events):
                             bucket["values"].append(elapsed)
                             if row.get("rows_returned") not in (None, ""):
                                 returned_rows += int(row["rows_returned"])
+                                empty_results += int(int(row["rows_returned"]) == 0)
                             else:
                                 returned_available = False
                         else:
@@ -186,10 +187,12 @@ def summarize_samples(directory, threads, events):
     exact = quotas is None or all(counts[i] == quotas[i] and
                                  all((i, n) in seen for n in range(1, quotas[i] + 1)) for i in counts)
     summary = {**latency_metrics(values), "attempts": rows, "successes": len(values),
-               "client_rows_returned": returned_rows if returned_available else None,
+               "client_rows_returned": returned_rows if returned_available and values else None,
+               "empty_result_successes": empty_results if returned_available and values else None,
                "errors": len(failures), "error_examples": failures[:20], "malformed_or_duplicate": bad,
                "per_thread_attempts": counts, "expected_events": events or None,
                "quota_complete": exact, "start_unix": first, "end_unix": last,
+               "start_monotonic": mono_first, "end_monotonic": mono_last,
                "query_window_seconds": duration, "qps": len(values) / duration if duration else None,
                "small_tail_sample": len(values) < 1000,
                "timeline": [{"unix": t, **latency_metrics(b["values"]), "errors": b["errors"]}
@@ -206,6 +209,9 @@ def warmup_stable(windows, count, tolerance, min_samples, require_io=True):
         return False, {"reason": "insufficient_samples_or_errors"}
     checks = {}
     for key, floor in [("p50_ms", 0.01), ("qps", 0.01), ("physical_reads_per_query", 1.0)]:
+        if key == "physical_reads_per_query" and not require_io:
+            checks[key] = {"required": False, "reason": "InnoDB I/O does not gate analytic/auto warm-up."}
+            continue
         vals = [(w["client"].get(key) if key != "physical_reads_per_query" else w.get(key)) for w in recent]
         if any(v is None for v in vals):
             checks[key] = {"available": False}
@@ -218,7 +224,8 @@ def warmup_stable(windows, count, tolerance, min_samples, require_io=True):
     return all(c.get("stable", True) for c in checks.values()), {"checks": checks}
 
 
-def build_lua(sql, directory, threads, events, max_execution_ms, engine_setting=None):
+def build_lua(sql, directory, threads, events, max_execution_ms, engine_setting=None,
+              gated=False, duration_seconds=0):
     """Quota per thread, monotonic duration, no random selection or automatic retry."""
     if engine_setting not in (None, "OFF", "ON", "FORCED"):
         raise ValueError("Invalid secondary engine setting")
@@ -230,6 +237,7 @@ def build_lua(sql, directory, threads, events, max_execution_ms, engine_setting=
 ffi.cdef[[
 struct timespec {{ long tv_sec; long tv_nsec; }};
 int clock_gettime(int clock_id, struct timespec *tp);
+int usleep(unsigned int usec);
 ]]
 local CLOCK_MONOTONIC = ffi.os == "OSX" and 6 or 1
 local function clock(id)
@@ -240,6 +248,17 @@ end
 local query = {lua_long_string(sql)}
 local directory = {lua_long_string(str(Path(directory).resolve()))}
 local con, samples, sequence, quota, connection_id
+local gated = {str(gated).lower()}
+local function signal(name)
+  local f = assert(io.open(directory .. '/' .. name, 'w')); f:write('ready'); f:close()
+end
+local function wait_for(name)
+  while true do
+    local f = io.open(directory .. '/' .. name, 'r')
+    if f then f:close(); return end
+    ffi.C.usleep(1000)
+  end
+end
 local function csv(value)
   value = tostring(value or ""):gsub("[\\r\\n]", " ")
   return '"' .. value:gsub('"', '""') .. '"'
@@ -290,10 +309,17 @@ function event()
 end
 -- Use Sysbench's public event counters, avoiding a synthetic terminal event.
 function thread_run(tid)
-  while (not quota or sequence < quota) and ffi.C.sb_more_events(tid) do
+  if gated then signal('ready-' .. tid); wait_for('start.signal') end
+  local deadline = {duration_seconds} > 0 and (clock(CLOCK_MONOTONIC) + {duration_seconds}) or nil
+  while (not quota or sequence < quota) and (not deadline or clock(CLOCK_MONOTONIC) < deadline) and ffi.C.sb_more_events(tid) do
     ffi.C.sb_event_start(tid)
     event()
     ffi.C.sb_event_stop(tid)
+  end
+  if gated then
+    samples:flush()
+    signal('done-' .. tid)
+    wait_for('finish.signal')
   end
 end
 '''
